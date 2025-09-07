@@ -27,11 +27,6 @@ const scramjet = new ScramjetController({
 		all: "/scram/scramjet.all.js",
 		sync: "/scram/scramjet.sync.js",
 	},
-	flags: {
-		rewriterLogs: false,
-		naiiveRewriter: false,
-		scramitize: false,
-	},
 	siteFlags: {
 		"https://www.google.com/(search|sorry).*": {
 			naiiveRewriter: true,
