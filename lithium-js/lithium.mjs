@@ -16,6 +16,7 @@ export let currentTab = 0;
 export let framesElement;
 export let currentFrame;
 export const addressInput = document.getElementById("address");
+export let example = false;
 
 await import("/scram/scramjet.all.js");
 
