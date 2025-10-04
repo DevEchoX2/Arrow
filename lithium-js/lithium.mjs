@@ -18,6 +18,7 @@ export let currentFrame;
 export const addressInput = document.getElementById("address");
 export let scramPath = "/scram/"
 
+requestIdleCallBack(() => {
 await import(`${scramPath}scramjet.all.js`);
 
 const { ScramjetController } = window.$scramjetLoadController();
@@ -36,7 +37,8 @@ const scramjet = new ScramjetController({
 });
 
 scramjet.init();
-
+window.scramjet = scramjet;
+});
 const transportOptions = {
 	epoxy: "https://unpkg.com/@mercuryworkshop/epoxy-transport@2.1.27/dist/index.mjs",
 	libcurl: "https://unpkg.com/@mercuryworkshop/libcurl-transport@1.5.0/dist/index.mjs",
