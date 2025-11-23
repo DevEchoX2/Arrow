@@ -1,10 +1,346 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lithium JS Example</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css"/>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Arrow Browser</title>
+<style>
+  :root {
+    --bg:#0b0c10;--surface:#121318;--surface-2:#151821;
+    --text:#e6e8eb;--muted:#a2a7af;--border:#222634;
+    --accent:#4ac4ff;--accent-2:#7c5cff;
+  }
+  body{margin:0;height:100vh;background:var(--bg);color:var(--text);
+       font-family:"Segoe UI",sans-serif;overflow:hidden;}
+
+  /* Taskbar */
+  #taskbar{position:fixed;bottom:0;left:0;right:0;height:36px;background:var(--surface-2);
+    border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:0 8px;}
+  .taskbar-btn{padding:6px 12px;border-radius:6px;background:#1a1c22;color:var(--text);cursor:pointer;}
+  .taskbar-btn:hover{background:var(--accent);color:#0a0b0d;}
+
+  /* Window */
+  .window{position:absolute;top:0;left:0;width:100%;height:calc(100% - 36px);
+    background:var(--surface);border:1px solid var(--border);display:flex;flex-direction:column;}
+  .window.minimized{display:none;}
+  .window.windowed{width:800px;height:500px;top:60px;left:60px;border-radius:8px;
+    box-shadow:0 8px 24px rgba(0,0,0,.5);resize:both;overflow:hidden;}
+
+  .titlebar{background:var(--accent);color:#0a0b0d;padding:6px 10px;
+    display:flex;justify-content:space-between;align-items:center;font-weight:600;}
+  .controls button{border:none;background:transparent;color:inherit;font-size:16px;cursor:pointer;margin-left:8px;}
+
+  .navbar{display:flex;gap:8px;padding:6px;background:#151821;}
+  .navbar input{flex:1;padding:6px 10px;border-radius:999px;border:1px solid var(--border);
+    background:#0f1118;color:var(--text);}
+  .navbar button{border:none;border-radius:999px;padding:6px 12px;
+    background:linear-gradient(180deg,var(--accent),var(--accent-2));
+    color:#0a0b0d;font-weight:600;cursor:pointer;}
+
+  .tabs{display:flex;gap:6px;padding:6px;background:#121318;border-bottom:1px solid var(--border);overflow-x:auto;}
+  .tab{padding:4px 10px;border-radius:6px;background:#1a1c22;color:var(--text);cursor:pointer;}
+  .tab.active{background:var(--accent);color:#0a0b0d;}
+  .tab button{border:none;background:transparent;color:inherit;cursor:pointer;margin-left:6px;}
+
+  .viewport{flex:1;border:none;background:#0b0d13;}
+</style>
+</head>
+<body>
+  <div id="taskbar">
+    <div class="taskbar-btn" id="addWindowBtn">Add Window</div>
+    <div class="taskbar-btn" id="listWindowsBtn">Windows List</div>
+  </div>
+<script>
+const SEARCH = q => `https://search.brave.com/search?q=${encodeURIComponent(q)}`;
+const HOME = "https://example.com";
+const addWindowBtn = document.getElementById("addWindowBtn");
+const listWindowsBtn = document.getElementById("listWindowsBtn");
+
+let windows = [];
+let zCounter = 10;
+
+function normalize(v) {
+  if (!v) return HOME;
+  if (/^https?:\/\//i.test(v)) return v;
+  return /\./.test(v) && !/\s/.test(v) ? `https://${v}` : SEARCH(v);
+}
+function cleanTitle(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); }
+  catch { return url; }
+}
+
+function createWindow(url = HOME) {
+  const id = Date.now() + Math.random();
+  const win = document.createElement("div");
+  win.className = "window";
+  win.dataset.id = id;
+  win.style.zIndex = ++zCounter;
+
+  const titlebar = document.createElement("div");
+  titlebar.className = "titlebar";
+  titlebar.innerHTML = `
+    <span>Arrow Browser</span>
+    <div class="controls">
+      <button class="minBtn">–</button>
+      <button class="maxBtn">□</button>
+      <button class="closeBtn">×</button>
+    </div>`;
+  win.appendChild(titlebar);
+
+  const navbar = document.createElement("form");
+  navbar.className = "navbar";
+  navbar.innerHTML = `
+    <input type="text" placeholder="Enter URL or search…"/>
+    <button type="submit">Go</button>
+    <button type="button" class="newTabBtn">+</button>`;
+  win.appendChild(navbar);
+
+  const tabsBar = document.createElement("div");
+  tabsBar.className = "tabs";
+  win.appendChild(tabsBar);
+
+  const frame = document.createElement("iframe");
+  frame.className = "viewport";
+  win.appendChild(frame);
+
+  document.body.appendChild(win);
+
+  const state = {
+    id,
+    win,
+    frame,
+    navbar,
+    input: navbar.querySelector("input"),
+    tabsBar,
+    tabs: [],
+    activeTab: null,
+    titlebar,
+    // geometry cache for windowed mode
+    geo: { left: 60, top: 60, width: 800, height: 500 },
+    windowed: false,
+    minimized: false,
+    drag: { active: false, offsetX: 0, offsetY: 0, moveHandler: null, upHandler: null }
+  };
+  windows.push(state);
+
+  // Events
+  navbar.addEventListener("submit", e => {
+    e.preventDefault();
+    navigateTab(state, state.input.value.trim());
+  });
+  navbar.querySelector(".newTabBtn").onclick = () => createTab(state, HOME);
+  titlebar.querySelector(".minBtn").onclick = () => minimizeWindow(state);
+  titlebar.querySelector(".maxBtn").onclick = () => toggleWindowed(state);
+  titlebar.querySelector(".closeBtn").onclick = () => closeWindow(state);
+
+  // Focus on click
+  win.addEventListener("mousedown", () => focusWindow(state));
+
+  // Drag setup: only active when windowed
+  titlebar.addEventListener("mousedown", e => {
+    if (!state.windowed || state.minimized) return;
+    startDrag(state, e);
+  });
+
+  createTab(state, url);
+  focusWindow(state);
+}
+
+function createTab(winState, url) {
+  const id = Date.now() + Math.random();
+  const tab = { id, url, title: cleanTitle(url) };
+  winState.tabs.push(tab);
+  setActiveTab(winState, id);
+  renderTabs(winState);
+  navigateTab(winState, url);
+}
+
+function setActiveTab(winState, id) {
+  winState.activeTab = id;
+  renderTabs(winState);
+  const t = winState.tabs.find(x => x.id === id);
+  if (t) winState.input.value = t.url;
+}
+
+function closeTab(winState, id) {
+  winState.tabs = winState.tabs.filter(t => t.id !== id);
+  if (winState.activeTab === id) {
+    if (winState.tabs.length) {
+      setActiveTab(winState, winState.tabs[0].id);
+      navigateTab(winState, winState.tabs[0].url);
+    } else {
+      winState.activeTab = null;
+      winState.frame.src = "";
+      winState.input.value = "";
+    }
+  }
+  renderTabs(winState);
+}
+
+function renderTabs(winState) {
+  winState.tabsBar.innerHTML = "";
+  winState.tabs.forEach(t => {
+    const el = document.createElement("div");
+    el.className = "tab" + (t.id === winState.activeTab ? " active" : "");
+    el.textContent = t.title;
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "×";
+    closeBtn.onclick = e => { e.stopPropagation(); closeTab(winState, t.id); };
+    el.appendChild(closeBtn);
+    el.onclick = () => { setActiveTab(winState, t.id); navigateTab(winState, t.url); };
+    winState.tabsBar.appendChild(el);
+  });
+}
+
+function navigateTab(winState, raw) {
+  const url = normalize(raw);
+  winState.frame.src = url;
+  winState.input.value = url;
+  const t = winState.tabs.find(x => x.id === winState.activeTab);
+  if (t) { t.url = url; t.title = cleanTitle(url); }
+  renderTabs(winState);
+}
+
+function minimizeWindow(state) {
+  state.minimized = true;
+  state.win.classList.add("minimized");
+}
+
+function toggleWindowed(state) {
+  state.windowed = !state.windowed;
+  state.win.classList.toggle("windowed", state.windowed);
+
+  if (state.windowed) {
+    // Apply cached geometry
+    applyGeometry(state);
+  } else {
+    // Return to full-screen
+    stopDrag(state);
+    state.win.style.top = "0";
+    state.win.style.left = "0";
+    state.win.style.width = "100%";
+    state.win.style.height = "calc(100% - 36px)";
+  }
+}
+
+function closeWindow(state) {
+  stopDrag(state);
+  state.win.remove();
+  windows = windows.filter(x => x.id !== state.id);
+}
+
+function focusWindow(state) {
+  state.win.style.zIndex = ++zCounter;
+}
+
+function startDrag(state, e) {
+  state.drag.active = true;
+  state.drag.offsetX = e.clientX - state.win.offsetLeft;
+  state.drag.offsetY = e.clientY - state.win.offsetTop;
+
+  // Per-window handlers
+  state.drag.moveHandler = ev => {
+    if (!state.drag.active) return;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight - 36; // account for taskbar
+    let newLeft = ev.clientX - state.drag.offsetX;
+    let newTop = ev.clientY - state.drag.offsetY;
+
+    // Clamp inside viewport
+    const maxLeft = viewportW - state.win.offsetWidth;
+    const maxTop = viewportH - state.win.offsetHeight;
+    newLeft = Math.max(0, Math.min(newLeft, Math.max(0, maxLeft)));
+    newTop = Math.max(0, Math.min(newTop, Math.max(0, maxTop)));
+
+    state.win.style.left = newLeft + "px";
+    state.win.style.top = newTop + "px";
+
+    // Update cached geometry
+    state.geo.left = newLeft;
+    state.geo.top = newTop;
+    state.geo.width = state.win.offsetWidth;
+    state.geo.height = state.win.offsetHeight;
+  };
+
+  state.drag.upHandler = () => {
+    state.drag.active = false;
+    window.removeEventListener("mousemove", state.drag.moveHandler);
+    window.removeEventListener("mouseup", state.drag.upHandler);
+  };
+
+  window.addEventListener("mousemove", state.drag.moveHandler);
+  window.addEventListener("mouseup", state.drag.upHandler);
+}
+
+function stopDrag(state) {
+  if (state.drag.moveHandler) window.removeEventListener("mousemove", state.drag.moveHandler);
+  if (state.drag.upHandler) window.removeEventListener("mouseup", state.drag.upHandler);
+  state.drag.active = false;
+  state.drag.moveHandler = null;
+  state.drag.upHandler = null;
+}
+
+function applyGeometry(state) {
+  state.win.style.left = state.geo.left + "px";
+  state.win.style.top = state.geo.top + "px";
+  state.win.style.width = state.geo.width + "px";
+  state.win.style.height = state.geo.height + "px";
+}
+
+addWindowBtn.onclick = () => {
+  // If all windows minimized, create a new one; otherwise, spawn another
+  createWindow();
+};
+
+listWindowsBtn.onclick = () => {
+  // Build a simple dropdown menu
+  const existing = document.getElementById("winListMenu");
+  if (existing) existing.remove();
+
+  const menu = document.createElement("div");
+  menu.id = "winListMenu";
+  menu.style.position = "fixed";
+  menu.style.bottom = "44px";
+  menu.style.left = "8px";
+  menu.style.background = "#1a1c22";
+  menu.style.border = "1px solid #222634";
+  menu.style.borderRadius = "8px";
+  menu.style.padding = "6px";
+  menu.style.boxShadow = "0 8px 24px rgba(0,0,0,.4)";
+  menu.style.zIndex = 10000;
+
+  windows.forEach((w, i) => {
+    const item = document.createElement("div");
+    item.textContent = `${i + 1}. ${w.input.value || HOME}`;
+    item.style.padding = "6px 10px";
+    item.style.cursor = "pointer";
+    item.style.color = "#e6e8eb";
+    item.onmouseenter = () => item.style.background = "#2a2d36";
+    item.onmouseleave = () => item.style.background = "transparent";
+    item.onclick = () => {
+      w.minimized = false;
+      w.win.classList.remove("minimized");
+      focusWindow(w);
+      menu.remove();
+    };
+    menu.appendChild(item);
+  });
+
+  const close = document.createElement("div");
+  close.textContent = "Close";
+  close.style.marginTop = "6px";
+  close.style.padding = "6px 10px";
+  close.style.cursor = "pointer";
+  close.style.color = "#a2a7af";
+  close.onclick = () => menu.remove();
+  menu.appendChild(close);
+
+  document.body.appendChild(menu);
+};
+
+createWindow(HOME);
+</script>
+
   <!-- ONLY FOR THE EXAMPLE IF YOU PUT SCRAM AT ROOT YOU WILL NOT HAVE TO MANUALLY ADD IT -->
 	<script src="./lithium-js/scram/scramjet.all.js"></script>
 </head>
